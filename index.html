@@ -34,34 +34,17 @@
     }
     .logo {
       text-align: center;
-      font-size: 2em;
+      font-size: 1.5em;
       color: crimson;
       text-shadow: 0 0 10px crimson;
-      margin-bottom: 5px;
-    }
-    .subtitle {
-      text-align: center;
-      font-size: 0.9em;
-      color: #aaa;
-      margin-bottom: 20px;
+      margin-bottom: 10px;
     }
   </style>
 </head>
 <body>
   <div class="logo">MACCI TERMINAL</div>
-  <div class="subtitle">(type the name of the command to access it)</div>
-
   <div id="terminal">
-    <div id="output">Welcome to MACCI Terminal Wallet 🚀
-
-Available commands:
-• create — Not available in backend
-• recover <private_key>
-• balance <wallet_address> <private_key>
-• mine <wallet_address> <private_key>
-• send <wallet_address> <private_key> <to> <amount>
-• trade <wallet_address> <private_key> <usdt_amount>
-</div>
+    <div id="output">Welcome to MACCI Terminal Wallet\n</div>
     <div id="input-line">
       <span>&gt;</span>
       <input id="input" autocomplete="off" autofocus />
@@ -69,81 +52,33 @@ Available commands:
   </div>
 
   <script>
-    const SERVER = "https://macciwallet-backend.onrender.com";
     const input = document.getElementById("input");
     const output = document.getElementById("output");
+    let history = [];
+
+    input.focus();
 
     input.addEventListener("keydown", async (e) => {
       if (e.key === "Enter") {
         const command = input.value.trim();
-        if (!command) return;
+        if (command === "") return;
+
+        history.push(`> ${command}`);
         input.value = "";
 
-        const parts = command.split(" ");
-        const cmd = parts[0];
+        const res = await fetch("http://127.0.0.1:5000/terminal", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ input: command })
+        });
 
-        output.innerText += `\n> ${command}`;
+        const data = await res.json();
+        history.push(data.output);
+        output.innerText = history.join("\n");
 
-        try {
-          let res;
-          switch (cmd) {
-            case 'recover':
-              res = await fetch(`${SERVER}/recover`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ private_key: parts[1] })
-              });
-              break;
-            case 'balance':
-              res = await fetch(`${SERVER}/balance`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ wallet_address: parts[1], private_key: parts[2] })
-              });
-              break;
-            case 'mine':
-              output.innerText += "\nmining... ⛏️ warning: running another command will cancel the mine!";
-              res = await fetch(`${SERVER}/mine`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ wallet_address: parts[1], private_key: parts[2] })
-              });
-              break;
-            case 'send':
-              res = await fetch(`${SERVER}/send`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  wallet_address: parts[1],
-                  private_key: parts[2],
-                  to: parts[3],
-                  amount: parts[4]
-                })
-              });
-              break;
-            case 'trade':
-              res = await fetch(`${SERVER}/trade`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  wallet_address: parts[1],
-                  private_key: parts[2],
-                  usdt_amount: parts[3]
-                })
-              });
-              break;
-            default:
-              output.innerText += "\n❌ Unknown command.";
-              return;
-          }
-
-          const data = await res.json();
-          output.innerText += `\n${data.output}`;
-          document.getElementById("terminal").scrollTop = terminal.scrollHeight;
-
-        } catch (err) {
-          output.innerText += "\n❌ Could not connect to server.";
-        }
+        // Scroll to bottom
+        const term = document.getElementById("terminal");
+        term.scrollTop = term.scrollHeight;
       }
     });
   </script>
