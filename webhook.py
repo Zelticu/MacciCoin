@@ -1,67 +1,209 @@
-app.debug = True
-import stripe
 from flask import Flask, request, jsonify
-import os
-import json
+from flask_cors import CORS
+import hashlib, json, time, uuid, os
 
 app = Flask(__name__)
+CORS(app)
 
-# Set your test secret here
-STRIPE_WEBHOOK_SECRET = "whsec_86370940d1a09fe720e7d9768c776b104517b7c95e08d4c6f38520aae95d5c36"  # Replace with your CLI webhook secret
+# === MACCI CONFIG ===
+MAX_SUPPLY = 100_000_000
+PREMINE_AMOUNT = 40_000_000
+PRESALE_RATE = 10000
+MINING_REWARD = 10
+DIFFICULTY = 9
 
-def send_macci_to_wallet(wallet_address, amount):
-    print(f"✅ [MACCI SENT] {amount} MACCI → {wallet_address}")
+wallets = {}
+chain = []
+transactions = []
+total_mined = 0
+WALLET_FILE = "macci_wallets.json"
 
-@app.route('/stripe-webhook', methods=['POST'])
-def stripe_webhook():
-    payload = request.data
-    sig_header = request.headers.get('Stripe-Signature')
+MAIN_WALLET = "7fc8cb7519f34a0dbef5b2e15ecc24be"
+MAIN_KEY = "895175c759ae4f7db233da59c9cec12c"
+
+# === FILE IO ===
+
+def save_wallets():
+    data = {
+        "wallets": wallets,
+        "total_mined": total_mined
+    }
+    with open(WALLET_FILE, "w") as f:
+        json.dump(data, f)
+
+def load_wallets():
+    global wallets, total_mined
+    if os.path.exists(WALLET_FILE):
+        with open(WALLET_FILE, "r") as f:
+            data = json.load(f)
+            wallets = data.get("wallets", {})
+            total_mined = data.get("total_mined", 0)
+    else:
+        total_mined = PREMINE_AMOUNT
+        wallets[MAIN_WALLET] = {
+            "balance": PREMINE_AMOUNT,
+            "private_key": MAIN_KEY
+        }
+        save_wallets()
+
+# === Blockchain Core ===
+
+def create_genesis_block():
+    genesis = {
+        'index': 1,
+        'timestamp': time.time(),
+        'proof': 100,
+        'previous_hash': '1',
+        'transactions': []
+    }
+    chain.append(genesis)
+
+def hash_block(block):
+    return hashlib.sha256(json.dumps(block, sort_keys=True).encode()).hexdigest()
+
+def proof_of_work(previous_proof):
+    proof = 1
+    while True:
+        guess = hashlib.sha256(str(proof**2 - previous_proof**2).encode()).hexdigest()
+        if guess[:DIFFICULTY] == "0" * DIFFICULTY:
+            return proof
+        proof += 1
+
+def mine_block(address, key):
+    global total_mined
+    if address not in wallets:
+        return "❌ Wallet not found."
+    if wallets[address]["private_key"] != key:
+        return "❌ Invalid private key."
+    if total_mined + MINING_REWARD > MAX_SUPPLY:
+        return "❌ Max supply reached."
+
+    previous_proof = chain[-1]['proof']
+    proof = proof_of_work(previous_proof)
+    block = {
+        'index': len(chain) + 1,
+        'timestamp': time.time(),
+        'proof': proof,
+        'previous_hash': hash_block(chain[-1]),
+        'transactions': transactions.copy()
+    }
+
+    chain.append(block)
+    wallets[address]['balance'] += MINING_REWARD
+    total_mined += MINING_REWARD
+    transactions.clear()
+    save_wallets()
+
+    return f"⛏️ Block mined! +{MINING_REWARD} MACCI to {address}"
+
+def create_wallet():
+    addr = uuid.uuid4().hex[:32]
+    key = uuid.uuid4().hex
+    wallets[addr] = {"balance": 0, "private_key": key}
+    save_wallets()
+    return addr, key
+
+def recover_wallet(key):
+    for addr, data in wallets.items():
+        if data['private_key'] == key:
+            return addr
+    return None
+
+def get_balance(address, key):
+    if address not in wallets:
+        return "❌ Wallet not found."
+    if wallets[address]['private_key'] != key:
+        return "❌ Invalid private key."
+    return f"💰 Balance: {wallets[address]['balance']} MACCI"
+
+def send_macci(sender, key, to, amount, recipient_wallet):
+    if sender not in wallets:
+        return "❌ Sender not found."
+    if wallets[sender]['private_key'] != key:
+        return "❌ Invalid private key."
+    if wallets[sender]['balance'] < amount:
+        return "❌ Not enough balance."
+
+    if recipient_wallet not in wallets:
+        wallets[recipient_wallet] = {"balance": 0, "private_key": "UNKNOWN"}
+
+    wallets[sender]['balance'] -= amount
+    wallets[recipient_wallet]['balance'] += amount
+    save_wallets()
+    return f"✅ Sent {amount} MACCI from {sender} to {recipient_wallet}"
+
+def trade_usdt(wallet, key, usdt_amount):
+    global total_mined
+    if wallet not in wallets:
+        return "❌ Wallet not found."
+    if wallets[wallet]['private_key'] != key:
+        return "❌ Invalid private key."
 
     try:
-        event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
-    except ValueError:
-        print("❌ Invalid payload")
-        return 'Invalid payload', 400
-    except stripe.error.SignatureVerificationError:
-        print("❌ Invalid signature")
-        return 'Invalid signature', 400
+        usdt = float(usdt_amount)
+    except:
+        return "❌ Invalid USDT amount."
 
-    print(f"✅ Webhook received: {event['type']}")
+    if usdt <= 0:
+        return "❌ Must trade more than 0 USDT."
 
-    if event['type'] == 'checkout.session.completed':
-        session = event['data']['object']
-        amount_paid = int(session.get('amount_total', 0)) / 100
-        amount_macci = int(amount_paid / 0.01)
+    macci = int(usdt * PRESALE_RATE)
 
-        wallet_address = None
+    if total_mined + macci > MAX_SUPPLY:
+        return "❌ Max supply reached."
 
-        # Try to get wallet from custom_fields
-        try:
-            custom_fields = session.get("custom_fields", [])
-            for field in custom_fields:
-                if "Macci wallet address" in field.get("label", {}).get("custom", ""):
-                    wallet_address = field.get("text", {}).get("value")
-                    break
-        except Exception as e:
-            print("⚠️ Error checking custom_fields:", e)
+    wallets[wallet]['balance'] += macci
+    total_mined += macci
+    save_wallets()
+    return f"💱 Traded {usdt} USDT → {macci} MACCI"
 
-        # Fallback: try metadata
-        if not wallet_address:
-            wallet_address = session.get("metadata", {}).get("wallet_address")
+# === Terminal Route ===
 
-        # Print full object for debugging
-        print("📦 Full session object:")
-        print(json.dumps(session, indent=2))
+@app.route('/terminal', methods=['POST'])
+def terminal():
+    data = request.get_json()
+    cmd = data.get('input', '').strip().split()
+    if not cmd:
+        return jsonify({"output": "⚠️ No command entered."})
 
-        if wallet_address:
-            send_macci_to_wallet(wallet_address, amount_macci)
-            print(f"✅ Payment: ${amount_paid} → {amount_macci} MACCI → {wallet_address}")
-        else:
-            print("❌ Wallet address missing.")
+    match cmd[0].lower():
+        case 'create':
+            addr, key = create_wallet()
+            return jsonify({"output": f"✅ Wallet Created\nAddress: {addr}\nKey: {key}"})
+        case 'recover':
+            if len(cmd) != 2:
+                return jsonify({"output": "Usage: recover <private_key>"})
+            addr = recover_wallet(cmd[1])
+            return jsonify({"output": f"🔑 Wallet Address: {addr}" if addr else "❌ No wallet matches that key."})
+        case 'balance':
+            if len(cmd) != 3:
+                return jsonify({"output": "Usage: balance <wallet_address> <private_key>"})
+            return jsonify({"output": get_balance(cmd[1], cmd[2])})
+        case 'mine':
+            if len(cmd) != 3:
+                return jsonify({"output": "Usage: mine <wallet_address> <private_key>"})
+            response = {"output": "mining... ⛏️ warning: running another command will cancel the mine!"}
+            result = mine_block(cmd[1], cmd[2])
+            response["output"] += f"\n{result}"
+            return jsonify(response)
+        case 'send':
+            if len(cmd) != 6:
+                return jsonify({"output": "Usage: send <wallet_address> <private_key> <to> <amount> <recipient_wallet>"})
+            try:
+                amount = float(cmd[4])
+            except:
+                return jsonify({"output": "❌ Invalid amount."})
+            return jsonify({"output": send_macci(cmd[1], cmd[2], cmd[3], amount, cmd[5])})
+        case 'trade':
+            if len(cmd) != 4:
+                return jsonify({"output": "Usage: trade <wallet_address> <private_key> <usdt_amount>"})
+            return jsonify({"output": trade_usdt(cmd[1], cmd[2], cmd[3])})
+        case _:
+            return jsonify({"output": "❓ Unknown command. Try: create, recover, mine, balance, send, trade"})
 
-    return jsonify(success=True), 200
-
+# === Launch MACCI Node ===
 if __name__ == '__main__':
-    stripe.api_key = "sk_test_placeholder"
-    port = int(os.environ.get("PORT", 4242))
-    app.run(host="0.0.0.0", port=port)
+    load_wallets()
+    create_genesis_block()
+    print(f"✅ MACCI Terminal running with difficulty {DIFFICULTY}")
+    app.run(host="0.0.0.0", port=10000)
