@@ -203,7 +203,7 @@ def terminal():
 
 # === Launch MACCI Node ===
 if __name__ == '__main__':
-    load_wallets()
-    create_genesis_block()
-    print(f"✅ MACCI Terminal running with difficulty {DIFFICULTY}")
-    app.run(host="0.0.0.0", port=10000)
+    stripe.api_key = "sk_test_placeholder"
+    port = 4242  # ✅ Force it to run on 4242 for Stripe CLI
+    app.run(host="0.0.0.0", port=port)
+
