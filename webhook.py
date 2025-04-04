@@ -1,3 +1,4 @@
+app.debug = True
 import stripe
 from flask import Flask, request, jsonify
 import os
